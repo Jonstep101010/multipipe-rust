@@ -6,24 +6,7 @@ use std::{
 fn main() -> Result<(), std::io::Error> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 
-	// Parse commands separated by "|"
-	let mut commands = Vec::new();
-	let mut current_cmd = Vec::new();
-
-	for arg in args {
-		if arg == "|" {
-			if !current_cmd.is_empty() {
-				commands.push(current_cmd.clone());
-				current_cmd.clear();
-			}
-		} else {
-			current_cmd.push(arg);
-		}
-	}
-	if !current_cmd.is_empty() {
-		commands.push(current_cmd);
-	}
-
+	let commands = get_cmds(args);
 	if commands.is_empty() {
 		eprintln!("No commands provided");
 		return Ok(());
@@ -33,35 +16,26 @@ fn main() -> Result<(), std::io::Error> {
 	let mut prev_reader = None;
 
 	for (i, cmd_parts) in commands.iter().enumerate() {
-		let cmd_name = &cmd_parts[0];
-		let cmd_args = &cmd_parts[1..];
-
-		let mut command = Command::new(cmd_name);
-		command.args(cmd_args);
-
-		// Set up stdin
-		if let Some(reader) = prev_reader.take() {
-			// This is not the first command, use the previous pipe
-			command.stdin(reader);
-		} else {
-			// First command reads from stdin
-			command.stdin(Stdio::inherit());
-		}
-
-		// Set up stdout
-		if i == commands.len() - 1 {
-			// Last command writes to stdout
-			command.stdout(Stdio::inherit());
-		} else {
-			// Not the last command, create a pipe
-			let (reader, writer) = pipe()?;
-			command.stdout(writer);
-			prev_reader = Some(reader);
-		}
-
-		// Spawn the process
-		let child = command.spawn()?;
-		children.push(child);
+		children.push(
+			Command::new(&cmd_parts[0])
+				.args(&cmd_parts[1..])
+				.stdin(if let Some(reader) = prev_reader.take() {
+					reader
+				} else {
+					// first
+					Stdio::inherit()
+				})
+				.stdout(
+					if let Some((reader, writer)) = (i != commands.len() - 1).then_some(pipe()?) {
+						prev_reader = Some(reader.into());
+						writer.into()
+					} else {
+						// last
+						Stdio::inherit()
+					},
+				)
+				.spawn()?,
+		)
 	}
 
 	// parent: Wait for all processes to complete
@@ -70,4 +44,27 @@ fn main() -> Result<(), std::io::Error> {
 	}
 
 	Ok(())
+}
+
+///
+/// Parse commands separated by "|"
+fn get_cmds(args: Vec<String>) -> Vec<Vec<String>> {
+	let mut commands = Vec::new();
+	let mut current_cmd = Vec::new();
+	for (pos, arg) in args.iter().enumerate() {
+		if arg == "|" {
+			// preserve previous command
+			if !current_cmd.is_empty() {
+				commands.push(current_cmd.clone());
+				current_cmd.clear();
+			}
+		} else {
+			current_cmd.push(arg.clone());
+			// if last, preverve
+			if pos + 1 == args.len() {
+				commands.push(current_cmd.clone());
+			}
+		}
+	}
+	commands
 }
